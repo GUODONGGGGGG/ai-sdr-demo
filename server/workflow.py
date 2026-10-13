@@ -448,7 +448,7 @@ def _live_reply(state: dict, client: DeepSeekClient) -> None:
     # Verification is internal. Its confirmation suggestion must not override
     # the dialogue Agent or repeatedly request a company name on the call.
     _step(state, "verification", "done", "客户自述、候选和地区", f"{len(candidates)} 个候选；{'企业全称待人工核对' if fields['company_name']['status'] != 'confirmed' else '客户已自报完整名称'}")
-    _event(state, "QUALIFYING", "商机判断 Agent 分析客户原话")
+    _event(state, "QUALIFYING", "意向判断Agent 分析客户原话")
     quote = judged["evidence"].strip()
     evidence_ok = bool(quote and quote in "\n".join(state["replies"]))
     fallback_quote = _interest_quote(state["replies"])

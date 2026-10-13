@@ -2,7 +2,7 @@ const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const labels = {company_name:'企业抬头',industry:'行业',region:'地区',store_count:'门店数',designer_count:'设计师人数',customer_need:'客户需求'};
 const sources = {customer_statement:'客户原话',local_demo_directory:'本地模拟企业库',human_review:'人工复核'};
-const stepNames = [['aql','AQL 输入'],['scoring','初始评分 Agent'],['dialogue','对话 Agent'],['verification','企业核验'],['intent','商机判断'],['qualification','SQL 校验']];
+const stepNames = [['aql','AQL 输入'],['scoring','线索评分Agent'],['dialogue','外呼对话Agent'],['verification','企业核验'],['intent','意向判断Agent'],['qualification','SQL输出Agent']];
 const goalLabels = {company:'公司称呼',need:'核心需求',current_workflow:'当前做法',pain_point:'主要痛点',target_outcome:'期望效果',scale:'使用规模',pilot_scope:'试点范围',timeline:'预计时间',budget_range:'预算范围',decision_process:'决策参与人',consent:'后续联系同意',closing:'礼貌收尾'};
 let bootstrap, state, busy=false, currentReplyExample='';
 
@@ -83,7 +83,7 @@ function render() {
   $('fields').innerHTML=Object.entries(labels).map(([key,label])=>{const f=state.fields[key]||{};return `<tr><td>${esc(label)}</td><td>${f.value===null||f.value===undefined?'未知':esc(f.value)}</td><td>${esc(sources[f.source]||'—')}</td><td>${esc(f.evidence||'暂无证据；建议补问')}</td><td><span class="pill ${esc(f.status||'unknown')}">${esc({confirmed:'已确认',pending:'待确认',unknown:'未知'}[f.status]||'未知')}</span></td></tr>`}).join('');
   $('decision').innerHTML=`<div class="decision-status ${esc(state.status)}">${esc(state.status)}</div><div class="decision-reason">${esc(state.status_reason)}</div><div class="mini-list"><b>SQL 交接条件：</b>${state.handoff_eligible?'已具备；通话收尾后输出':'尚未全部具备'}<br><b>意向证据：</b>${esc(state.intent.evidence||'暂无可逐字核对的意向原话')}<br><b>证据来源：</b>${esc({deepseek_quote:'模型逐字引文',customer_statement_rule:'客户原话规则补证',unverified:'未核实'}[state.intent.evidence_source]||'客户原话')}<br><b>销售联系同意：</b>${esc(state.intent.willingness_evidence||'客户尚未明确同意')}<br><b>已了解：</b>${esc(Object.keys(state.discovery||{}).map(x=>goalLabels[x]).join('、')||'暂无')}<br><b>后续处理建议：</b>${esc(state.follow_up_suggestions.join('、')||'暂无')}</div>`;
   $('sql').innerHTML=state.ai_sql?`<div class="sql-ready">${esc(JSON.stringify(state.ai_sql,null,2))}</div>`:`<div class="sql-empty">${state.handoff_eligible?'已具备交接条件，仍在通话中；结束后生成 AI SQL':'当前未达到 READY'}<br>当前不生成销售可跟进的 AI SQL</div>`;
-  $('agent-log').innerHTML=state.agent_runs.length?state.agent_runs.slice(-6).reverse().map(x=>`<div class="log-item ${esc(x.status)}"><b>${esc({scoring:'初始评分 Agent',dialogue:'对话 Agent',verification:'企业核验 Agent',intent:'商机判断 Agent'}[x.agent]||x.agent)} · ${esc(x.status)}</b>${esc(x.started_at)} → ${esc(x.ended_at||'执行中')}<br>${esc(x.reason||'结构化输出已校验')}</div>`).join(''):'<div class="empty">Agent 尚未执行</div>';
+  $('agent-log').innerHTML=state.agent_runs.length?state.agent_runs.slice(-6).reverse().map(x=>`<div class="log-item ${esc(x.status)}"><b>${esc({scoring:'线索评分Agent',dialogue:'外呼对话Agent',verification:'企业核验 Agent',intent:'意向判断Agent'}[x.agent]||x.agent)} · ${esc(x.status)}</b>${esc(x.started_at)} → ${esc(x.ended_at||'执行中')}<br>${esc(x.reason||'结构化输出已校验')}</div>`).join(''):'<div class="empty">Agent 尚未执行</div>';
   $('state-log').innerHTML=state.events.slice().reverse().map(x=>`<div>${esc(x.at)} · ${esc(x.status)} · ${esc(x.reason)}</div>`).join('');
 }
 
