@@ -113,7 +113,7 @@ class DeepSeekClient:
         system = {
             "scoring": "你是初始线索评分 Agent，只分析输入中的来源与客户行为记录，不读取后续通话或场景标签。行为是观察记录，不等于客户购买意向、企业身份、销售联系同意或 SQL 资格。请根据行为的主动性、产品相关性、重复/深入程度和时间信息，对是否值得优先开启 AI 外呼给出 0-100 整数评分；明确主动申请演示可高分，浅层浏览应低分。不得凭空补充行为、预算、采购计划或身份；来源仅作背景，不独立证明意向。行为太模糊、缺失或无法判断时 score 为 null。signals 中 quote 必须是 behavior_text 的逐字连续片段，每条 interpretation 解释其与联系优先级的关系，最多 5 条。reason 简述评分理由及不确定性。仅输出 JSON：{\"score\":null,\"signals\":[],\"reason\":\"\"}。",
             "dialogue": DIALOGUE_SYSTEM_PROMPT,
-            "verification": "你是内部企业核验 Agent，不直接和客户通话。候选来自本地模拟库，非真实工商数据；匹配不等于确认。只能使用给定候选 ID。若企业全称未确认，可建议一次口头询问公司常用全称；客户说不清时标记人工复核，不再追问。confirmation_question 不得索取营业执照、照片、证件、统一社会信用代码，也不得要求发送或上传资料。仅输出 JSON：{\"candidate_ids\":[],\"ambiguity_reason\":\"\",\"confirmation_question\":\"\",\"reply_example\":\"\",\"recommend_review\":true}。",
+            "verification": "你是内部抬头确认Agent，不直接和客户通话。候选来自本地模拟库，非真实工商数据；匹配不等于确认。只能使用给定候选 ID。若企业全称未确认，可建议一次口头询问公司常用全称；客户说不清时标记人工复核，不再追问。confirmation_question 不得索取营业执照、照片、证件、统一社会信用代码，也不得要求发送或上传资料。仅输出 JSON：{\"candidate_ids\":[],\"ambiguity_reason\":\"\",\"confirmation_question\":\"\",\"reply_example\":\"\",\"recommend_review\":true}。",
             "intent": "你是商机判断 Agent。仅依据 replies 中的客户原话判断购买意向与是否同意销售继续联系；线索评分不是购买意向。evidence 必须是 replies 中逐字连续出现的片段，禁止改写或拼接；若没有可引用原话则填空字符串。只有客户明确允许销售联系，follow_up_willingness 才能为 true；需求、预算、上线计划本身不等于联系同意。仅输出 JSON：{\"intent_level\":\"未知\",\"evidence\":\"\",\"follow_up_willingness\":false,\"reason\":\"\"}。意向可为低、中、高、未知。",
         }[name]
         if name == "scoring":

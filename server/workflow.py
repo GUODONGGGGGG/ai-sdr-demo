@@ -520,7 +520,7 @@ def _live_reply(state: dict, client: DeepSeekClient) -> None:
             judged = intent_future.result()
     valid_ids = {x["id"] for x in candidates}
     if not set(verification["candidate_ids"]).issubset(valid_ids):
-        raise AgentError("企业核验 Agent 返回了不存在的候选 ID")
+        raise AgentError("抬头确认Agent 返回了不存在的候选 ID")
     exact = next((x for x in candidates if x["name"] == name), None)
     stated = _stated_company(state["replies"])
     explicit = bool(stated and stated[0] == name)
