@@ -3,7 +3,7 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;',
 const labels = {company_name:'企业抬头',industry:'行业',region:'地区',store_count:'门店数',designer_count:'设计师人数',customer_need:'客户需求'};
 const sources = {customer_statement:'客户原话',local_demo_directory:'本地模拟企业库',human_review:'人工复核'};
 const stepNames = [['aql','AQL 输入'],['scoring','线索评分Agent'],['dialogue','外呼对话Agent'],['verification','企业核验'],['intent','意向判断Agent'],['qualification','SQL输出Agent']];
-const goalLabels = {company:'公司称呼',need:'核心需求',current_workflow:'当前做法',pain_point:'主要痛点',target_outcome:'期望效果',scale:'使用规模',pilot_scope:'试点范围',timeline:'预计时间',budget_range:'预算范围',decision_process:'决策参与人',consent:'后续联系同意',closing:'礼貌收尾'};
+const goalLabels = {company:'公司称呼',need:'核心需求',profile:'行业与经营地区',footprint:'门店与设计师规模',current_workflow:'当前做法',pain_point:'主要痛点',target_outcome:'期望效果',scale:'使用规模',pilot_scope:'试点范围',timeline:'预计时间',budget_range:'预算范围',decision_process:'决策参与人',consent:'后续联系同意',closing:'礼貌收尾'};
 let bootstrap, state, busy=false, currentReplyExample='';
 const statusLabels = {NEW:'新线索',SCORED:'已评分',SCORE_FAILED:'评分失败',CONVERSING:'外呼对话中',VERIFYING:'企业核验中',QUALIFYING:'意向判断中',REVIEW:'待人工复核',READY:'可输出 SQL',NURTURE:'暂不跟进'};
 const runLabels = {success:'实时推理成功',simulated:'模拟运行',failed:'调用失败',running:'执行中'};

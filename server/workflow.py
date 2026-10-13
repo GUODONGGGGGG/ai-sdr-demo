@@ -48,6 +48,8 @@ SENSITIVE_REQUEST = re.compile(r"营业执照|统一社会信用代码|社会信
 
 GOALS = {
     "need": ("您目前最想改善哪方面的工作？", "目前想把团队协作做得更顺一些。", r"需求|问题|改善|希望|困扰|解决|工作"),
+    "profile": ("方便了解一下，贵公司主要做哪类业务、目前在哪个城市经营？", "主要做家居设计，业务在杭州。", r"行业|业务|经营|城市|地区|哪里"),
+    "footprint": ("目前大概有几家门店、多少位设计师？", "目前有五家门店，十八位设计师。", r"门店|店面|设计师"),
     "current_workflow": ("这件事目前在团队里一般是怎么处理的？", "现在主要靠表格和群消息协作。", r"目前|现在|平时|怎么|流程"),
     "pain_point": ("现有做法里，最影响效率的地方是什么？", "反复确认版本比较费时间。", r"影响|痛点|麻烦|难|效率|卡"),
     "target_outcome": ("如果能改善，您最希望先看到什么变化？", "希望交接更清楚、少一些返工。", r"希望|目标|变化|效果|改善"),
@@ -74,6 +76,10 @@ def _safe_question(question: str, previous: list[dict]) -> bool:
 def _safe_example(kind: str, example: str) -> bool:
     if not example or SENSITIVE_REQUEST.search(example):
         return False
+    if kind == "profile":
+        return not re.search(r"有限公司|我们是|我们公司叫|公司名称|公司是|预算|采购计划|门店|设计师", example)
+    if kind == "footprint":
+        return not re.search(r"有限公司|我们是|我们公司叫|公司名称|公司是|预算|采购计划|想要|想把|希望|需要", example)
     if kind != "company":
         return not re.search(r"有限公司|我们是|我们公司叫|公司名称|公司是|[一二三四五六七八九十\d]+家(?:店|门店)|设计师.{0,8}人", example)
     if kind == "company":
@@ -320,18 +326,44 @@ def _evidenced_fields(replies: list[str], extracted: dict, evidence: dict) -> di
 
 def _live_goals(state: dict, fields: dict, intent: dict) -> list[str]:
     asked = {item["kind"] for item in state["question_history"]}
+    counts = {goal: sum(item["kind"] == goal for item in state["question_history"]) for goal in ("profile", "footprint")}
+    unavailable = bool(state["replies"] and re.search(r"不清楚|不知道|不确定|不方便透露|记不清", state["replies"][-1]))
     goals = []
     if fields["customer_need"]["status"] != "confirmed" and "need" not in asked:
         goals.append("need")
-    for goal in DISCOVERY_LABELS:
-        if goal not in state["discovery"] and goal not in asked:
-            goals.append(goal)
+    profile_missing = sum(fields[name]["status"] != "confirmed" for name in ("industry", "region"))
+    footprint_missing = sum(fields[name]["status"] != "confirmed" for name in ("store_count", "designer_count"))
+    if profile_missing and (not counts["profile"] or counts["profile"] == 1 and profile_missing == 1 and not unavailable):
+        goals.append("profile")
+    if footprint_missing and (not counts["footprint"] or counts["footprint"] == 1 and footprint_missing == 1 and not unavailable):
+        goals.append("footprint")
     if not intent["follow_up_willingness"] and "consent" not in asked:
-        if len(state["replies"]) >= 4:
+        if len(state["replies"]) >= 4 and fields["customer_need"]["status"] == "confirmed":
             goals.insert(0, "consent")
         else:
             goals.append("consent")
     return goals
+
+
+def _field_question(goal: str, fields: dict) -> tuple[str, str, str]:
+    """Ask only for missing facts; a related pair fits one natural phone question."""
+    if goal == "profile":
+        industry = fields["industry"]["status"] != "confirmed"
+        region = fields["region"]["status"] != "confirmed"
+        if industry and region:
+            return "方便了解一下，贵公司主要做哪类业务、目前在哪个城市经营？", "主要做家居设计，业务在杭州。", r"(?=.*(?:行业|业务|做哪类|主营))(?=.*(?:城市|地区|哪里|经营地))"
+        if industry:
+            return "方便了解一下，贵公司主要做哪类业务？", "主要做家居设计。", r"行业|业务|做哪类|主营"
+        return "方便了解一下，贵公司目前主要在哪个城市经营？", "目前主要在杭州经营。", r"城市|地区|哪里|经营地"
+    if goal == "footprint":
+        stores = fields["store_count"]["status"] != "confirmed"
+        designers = fields["designer_count"]["status"] != "confirmed"
+        if stores and designers:
+            return "目前大概有几家门店、多少位设计师？", "目前有五家门店，十八位设计师。", r"(?=.*(?:门店|店面))(?=.*设计师)"
+        if stores:
+            return "目前大概有几家门店？", "目前有五家门店。", r"门店|店面"
+        return "目前大概有多少位设计师？", "目前有十八位设计师。", r"设计师"
+    return GOALS[goal]
 
 
 def _live_qualify(state: dict, fields: dict, candidates: list, intent: dict, dialogue: dict) -> None:
@@ -348,8 +380,8 @@ def _live_qualify(state: dict, fields: dict, candidates: list, intent: dict, dia
                 and intent["level"] in {"中", "高"} and intent["follow_up_willingness"])
     state["handoff_eligible"] = eligible
     goals = _live_goals(state, fields, intent)
-    model_stop = dialogue.get("stop_decision") == "finish"
-    end = declined or busy or len(replies) >= MAX_LIVE_REPLIES or not goals or (model_stop and eligible)
+    six_fields_confirmed = all(item["status"] == "confirmed" for item in fields.values())
+    end = declined or busy or len(replies) >= MAX_LIVE_REPLIES or not goals or (eligible and six_fields_confirmed)
     if end:
         status = "NURTURE" if declined else "READY" if eligible else "REVIEW"
         if status == "READY":
@@ -366,14 +398,19 @@ def _live_qualify(state: dict, fields: dict, candidates: list, intent: dict, dia
         state["reply_example"] = None
         state["call_ended"] = True
     else:
-        goal = dialogue.get("question_goal")
-        if len(replies) >= 4 and "consent" in goals and fields["customer_need"]["status"] == "confirmed":
-            goal = "consent"
-        if goal not in goals:
-            goal = goals[0]
-        fallback, sample, pattern = GOALS[goal]
+        # Six SQL fields and contact consent take precedence over optional discovery.
+        goal = goals[0]
+        fallback, sample, pattern = _field_question(goal, fields)
         proposed = dialogue.get("next_question", "").strip()
         valid = _safe_question(proposed, state["question_history"]) and bool(re.search(pattern, proposed))
+        if goal == "profile" and fields["industry"]["status"] == "confirmed" and re.search(r"行业|业务|做哪类|主营", proposed):
+            valid = False
+        if goal == "profile" and fields["region"]["status"] == "confirmed" and re.search(r"城市|地区|哪里|经营地", proposed):
+            valid = False
+        if goal == "footprint" and fields["store_count"]["status"] == "confirmed" and re.search(r"门店|店面", proposed):
+            valid = False
+        if goal == "footprint" and fields["designer_count"]["status"] == "confirmed" and "设计师" in proposed:
+            valid = False
         question = proposed if valid else fallback
         example = dialogue.get("reply_example", "").strip()
         if valid and _safe_example(goal, example):
@@ -381,11 +418,11 @@ def _live_qualify(state: dict, fields: dict, candidates: list, intent: dict, dia
         else:
             state["reply_example"] = {"text": sample, "source": "rule_based", "question": question}
         state["question_goal"] = goal
-        state["goal_reason"] = dialogue.get("question_reason", "补充有价值的业务信息")[:200] if valid else "模型建议未通过边界或目标检查，已使用安全话术"
+        state["goal_reason"] = dialogue.get("question_reason", "补齐 SQL 所需字段")[:200] if valid else "优先补齐 SQL 字段；模型建议未覆盖本轮目标，已使用安全话术"
         state["question_history"].append({"kind": goal, "text": question})
         state["call_ended"] = False
         status = "CONVERSING"
-        reason = "已具备 SQL 交接条件；继续补齐客户愿意分享的信息" if eligible else "继续了解客户需求与跟进意愿"
+        reason = "已具备 SQL 交接条件；继续补齐六个字段" if eligible else "优先收集六个字段与跟进意愿"
     state["next_question"] = question
     state["messages"].append({"role": "agent", "text": question, "at": now()})
     state["follow_up_suggestions"] = [] if status == "NURTURE" else [f"补问{label}" for label in state["missing_fields"]]
@@ -397,13 +434,14 @@ def _live_qualify(state: dict, fields: dict, candidates: list, intent: dict, dia
 
 
 def _live_reply(state: dict, client: DeepSeekClient) -> None:
-    possible = [goal for goal in GOALS if goal not in {item["kind"] for item in state["question_history"]}]
+    possible = _live_goals(state, state["fields"], state["intent"])
     dialogue = client.run("dialogue", {"aql": state["aql"], "replies": state["replies"], "current_fields": state["fields"],
         "question_history": state["question_history"], "discovery": state["discovery"], "possible_goals": possible,
-        "round": len(state["replies"]), "max_rounds": MAX_LIVE_REPLIES, "scenario": state["scenario_id"]}, state["agent_runs"])
+        "round": len(state["replies"]), "max_rounds": MAX_LIVE_REPLIES, "scenario": state["scenario_id"],
+        "sql_field_priority": [name for name in FIELD_NAMES if state["fields"][name]["status"] != "confirmed"]}, state["agent_runs"])
     fields = _evidenced_fields(state["replies"], dialogue["extracted_fields"], dialogue["evidence"])
     for name, previous in state["fields"].items():
-        if fields[name]["status"] == "unknown" and previous["status"] == "confirmed" and previous["source"] == "customer_statement" and previous["evidence"] in "\n".join(state["replies"]):
+        if fields[name]["status"] == "unknown" and previous["status"] == "confirmed" and ((previous["source"] == "customer_statement" and previous["evidence"] in "\n".join(state["replies"])) or (previous["source"] == "local_demo_directory" and fields["company_name"]["status"] == "confirmed")):
             fields[name] = copy.deepcopy(previous)
     all_text = "\n".join(state["replies"])
     for name, value in dialogue.get("discovery_fields", {}).items():

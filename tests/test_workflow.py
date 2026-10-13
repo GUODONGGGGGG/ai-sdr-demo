@@ -159,7 +159,7 @@ class WorkflowTests(unittest.TestCase):
             fake = FakeHTTP([json.dumps(x, ensure_ascii=False) for x in (dialogue, verification, intent)])
             state = new_session("live")
             add_reply(state, reply, DeepSeekClient(fake))
-        self.assertEqual(state["status"], "CONVERSING")
+        self.assertEqual(state["status"], "READY")
         self.assertTrue(state["handoff_eligible"])
         self.assertEqual(len(fake.calls), 3)
         self.assertEqual(fake.calls[0][1]["json"]["thinking"], {"type": "disabled"})
@@ -186,11 +186,11 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(state["reply_example"]["question"], state["next_question"])
             self.assertEqual(state["reply_example"]["source"], "deepseek_generated")
             add_reply(state, replies[1], client)
-        self.assertEqual(state["status"], "CONVERSING")
+        self.assertEqual(state["status"], "READY")
         self.assertTrue(all(x["status"] == "confirmed" for x in state["fields"].values()))
         self.assertTrue(state["handoff_eligible"])
-        self.assertFalse(state["call_ended"])
-        self.assertIsNone(state["ai_sql"])
+        self.assertTrue(state["call_ended"])
+        self.assertIsNotNone(state["ai_sql"])
 
     def test_live_verification_and_intent_run_in_parallel(self):
         barrier = threading.Barrier(2)
@@ -211,7 +211,7 @@ class WorkflowTests(unittest.TestCase):
 
         state = new_session("live")
         add_reply(state, reply, ParallelFake())
-        self.assertEqual(state["status"], "CONVERSING")
+        self.assertEqual(state["status"], "READY")
         self.assertTrue(state["handoff_eligible"])
         self.assertEqual({x["agent"] for x in state["agent_runs"]}, {"dialogue", "verification", "intent"})
 
@@ -235,12 +235,12 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(state["intent"]["evidence"], replies[2])
             self.assertEqual(state["intent"]["evidence_source"], "customer_statement_rule")
             self.assertFalse(state["intent"]["follow_up_willingness"])
-            self.assertIn("继续了解", state["status_reason"])
+            self.assertIn("优先收集", state["status_reason"])
             self.assertEqual(state["reply_example"]["source"], "rule_based")
             self.assertEqual(state["steps"]["qualification"]["status"], "running")
             self.assertIn(replies[2], state["steps"]["intent"]["output"])
             add_reply(state, "可以，请让销售下周联系我。", DeepSeekClient(fake))
-        self.assertEqual(state["status"], "CONVERSING")
+        self.assertEqual(state["status"], "READY")
         self.assertTrue(state["intent"]["follow_up_willingness"])
         self.assertEqual(state["intent"]["willingness_evidence"], "请让销售下周联系我")
 
@@ -269,7 +269,7 @@ class WorkflowTests(unittest.TestCase):
             state = new_session("live")
             add_reply(state, replies[0], client)
             add_reply(state, replies[1], client)
-        self.assertEqual(state["status"], "CONVERSING")
+        self.assertEqual(state["status"], "READY")
         self.assertEqual(state["fields"]["customer_need"]["value"], "最近想把门店方案设计和团队协同统一起来")
         self.assertEqual(state["fields"]["customer_need"]["source"], "customer_statement")
 
@@ -354,7 +354,7 @@ class WorkflowTests(unittest.TestCase):
         response = client.post("/api/sessions", json={"mode": "simulation", "scenario_id": "D"})
         self.assertEqual(response.status_code, 400)
 
-    def test_live_model_drives_goal_and_sql_waits_for_polite_closing(self):
+    def test_live_prioritizes_sql_fields_over_optional_model_goal(self):
         class GoalClient:
             def parallel_peer(self):
                 return None
@@ -374,13 +374,15 @@ class WorkflowTests(unittest.TestCase):
         state = new_session("live", scenario_id="D")
         client = GoalClient()
         add_reply(state, "我们是杭州星桥家居设计有限公司，想把门店方案设计和团队协同统一起来，可以让销售联系我。", client)
-        self.assertEqual(state["question_goal"], "timeline")
-        self.assertIn("什么时候开始试用", state["next_question"])
-        self.assertEqual(state["reply_example"]["source"], "deepseek_generated")
+        self.assertEqual(state["question_goal"], "profile")
+        self.assertIn("城市", state["next_question"])
+        self.assertEqual(state["reply_example"]["source"], "rule_based")
         self.assertTrue(state["handoff_eligible"])
         self.assertEqual(state["status"], "CONVERSING")
         self.assertIsNone(state["ai_sql"])
         for reply in ("下个月。", "我们现在靠表格协作。", "版本经常混乱。", "希望减少返工。", "先在一组试用。"):
+            if state["call_ended"]:
+                break
             add_reply(state, reply, client)
         self.assertEqual(state["status"], "READY")
         self.assertTrue(state["call_ended"])
@@ -477,7 +479,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(ended["agent_runs"]), 3)
         self.assertIn("操作人结束对话", ended["status_reason"])
 
-    def test_model_can_end_early_once_sql_is_eligible(self):
+    def test_model_stop_waits_for_remaining_sql_fields(self):
         class FinishClient:
             def parallel_peer(self):
                 return None
@@ -494,8 +496,52 @@ class WorkflowTests(unittest.TestCase):
         state = new_session("live")
         add_reply(state, "我们是杭州星桥家居设计有限公司，想把门店设计和团队协作统一起来，可以让销售联系我。", FinishClient())
         self.assertEqual(len(state["replies"]), 1)
+        self.assertEqual(state["status"], "CONVERSING")
+        self.assertEqual(state["question_goal"], "profile")
+        self.assertFalse(state["call_ended"])
+        self.assertIsNone(state["ai_sql"])
+
+    def test_six_fields_collected_in_five_replies_and_end_early(self):
+        class SixFieldClient:
+            def parallel_peer(self):
+                return None
+
+            def run(self, name, payload, log):
+                replies = payload["replies"]
+                if name == "dialogue":
+                    text = "\n".join(replies)
+                    values = {}
+                    evidence = {}
+                    for key, marker, value in (
+                        ("company_name", "我们是杭州星桥家居设计有限公司", "杭州星桥家居设计有限公司"),
+                        ("customer_need", "想把设计和协同统一起来", "想把设计和协同统一起来"),
+                        ("region", "主要在杭州经营", "杭州"),
+                    ):
+                        if marker in text:
+                            values[key], evidence[key] = value, marker
+                    return {"question_goal": "timeline", "next_question": "什么时候开始？", "reply_example": "下个月。",
+                            "stop_decision": "finish", "extracted_fields": values, "evidence": evidence, "missing_fields": []}
+                if name == "verification":
+                    return {"candidate_ids": ["DEMO-001"], "ambiguity_reason": "全称匹配", "confirmation_question": "", "recommend_review": False}
+                return {"intent_level": "中", "evidence": "想把设计和协同统一起来" if any("想把设计和协同统一起来" in reply for reply in replies) else "",
+                        "follow_up_willingness": any("可以让销售联系我" in reply for reply in replies), "reason": "根据客户原话"}
+
+        state = new_session("live", scenario_id="D")
+        client = SixFieldClient()
+        for reply, expected_goal in (
+            ("我们是杭州星桥家居设计有限公司。", "need"),
+            ("想把设计和协同统一起来。", "profile"),
+            ("主要在杭州经营。", "footprint"),
+            ("目前有五家门店，设计师大概十八人。", "consent"),
+        ):
+            add_reply(state, reply, client)
+            self.assertEqual(state["question_goal"], expected_goal)
+            self.assertFalse(state["call_ended"])
+        add_reply(state, "可以让销售联系我。", client)
+        self.assertEqual(len(state["replies"]), 5)
         self.assertEqual(state["status"], "READY")
         self.assertTrue(state["call_ended"])
+        self.assertTrue(all(item["status"] == "confirmed" for item in state["fields"].values()))
         self.assertIsNotNone(state["ai_sql"])
 
     def test_six_round_cap_and_consent_is_asked_in_time(self):
@@ -505,21 +551,30 @@ class WorkflowTests(unittest.TestCase):
 
             def run(self, name, payload, log):
                 if name == "dialogue":
+                    replies = payload["replies"]
+                    extracted = {"customer_need": "想把团队协作统一起来"}
+                    evidence = {"customer_need": "想把团队协作统一起来"}
+                    for field_name, marker, value in (("industry", "主要做家居设计", "家居设计"), ("region", "主要在杭州经营", "杭州")):
+                        if any(marker in reply for reply in replies):
+                            extracted[field_name], evidence[field_name] = value, marker
                     return {"question_goal": "current_workflow", "next_question": "现在团队怎么处理？", "stop_decision": "continue",
-                            "extracted_fields": {"customer_need": "想把团队协作统一起来"}, "evidence": {"customer_need": "想把团队协作统一起来"}, "missing_fields": []}
+                            "extracted_fields": extracted, "evidence": evidence, "missing_fields": []}
                 if name == "verification":
                     return {"candidate_ids": [], "ambiguity_reason": "未报企业名称", "confirmation_question": "", "recommend_review": True}
                 return {"intent_level": "中", "evidence": "想把团队协作统一起来", "follow_up_willingness": False, "reason": "有需求"}
 
         state = new_session("live", scenario_id="D")
         client = LimitedClient()
-        for i in range(4):
-            add_reply(state, "想把团队协作统一起来。" if i == 0 else "目前还在内部评估。", client)
+        for reply in ("想把团队协作统一起来。", "主要做家居设计。", "主要在杭州经营。", "目前有五家门店。"):
+            add_reply(state, reply, client)
         self.assertEqual(state["question_goal"], "consent")
         self.assertIn("联系", state["next_question"])
-        add_reply(state, "这个我暂时不确定。", client)
+        add_reply(state, "可以让销售联系我。", client)
         self.assertFalse(state["call_ended"])
-        add_reply(state, "还需要再内部讨论。", client)
+        self.assertEqual(state["question_goal"], "footprint")
+        self.assertIn("设计师", state["next_question"])
+        self.assertNotIn("门店", state["next_question"])
+        add_reply(state, "设计师大概十八人。", client)
         self.assertEqual(len(state["replies"]), 6)
         self.assertEqual(state["status"], "REVIEW")
         self.assertTrue(state["call_ended"])
