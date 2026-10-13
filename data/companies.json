@@ -1,0 +1,8 @@
+{
+  "notice": "本地模拟企业候选库，非真实工商数据",
+  "companies": [
+    {"id": "DEMO-001", "name": "杭州星桥家居设计有限公司", "aliases": ["星桥家居"], "region": "杭州", "industry": "家居设计"},
+    {"id": "DEMO-002", "name": "杭州星桥家居科技有限公司", "aliases": ["星桥家居"], "region": "杭州", "industry": "家居科技"},
+    {"id": "DEMO-003", "name": "宁波星桥装饰有限公司", "aliases": ["星桥装饰"], "region": "宁波", "industry": "装饰设计"}
+  ]
+}

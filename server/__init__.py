@@ -1,1 +1,1 @@
-"""AI SDR demo server package."""
+"""Phase 1 deterministic AI SDR demo rules."""

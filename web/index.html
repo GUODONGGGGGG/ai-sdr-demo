@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI SDR · 线索孵化工作台</title>
+  <link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">✳</span><span>AI SDR<span class="brand-sub">AGENT SYSTEM</span></span></div>
+      <div class="side-label">工作台</div>
+      <div class="side-item active"><span>◫</span> 线索孵化<span class="side-dot"></span></div>
+      <div class="side-item muted"><span>◉</span> 运行记录</div>
+      <div class="side-item muted"><span>▤</span> 企业候选库</div>
+      <div class="side-bottom"><div class="side-bottom-title">演示环境</div><p>本地模拟企业候选库<br>非真实工商数据</p><span class="side-tag">DEMO DATA</span></div>
+    </aside>
+    <main class="main">
+      <header class="topbar"><div class="breadcrumb">工作台 <span>/</span> 线索孵化 <span>/</span> 演示案例</div><div class="top-right"><span class="top-indicator"></span>本地演示环境</div></header>
+      <div class="content">
+        <section class="hero"><div><div class="eyebrow">AGENT ORCHESTRATION / 01</div><h1>从 AQL 到可追溯的 AI SQL</h1><p>让对话、企业核验和商机判断各司其职；每个结论都能回到客户原话或人工操作。</p></div><div class="hero-shape"><div class="shape-node">AQL</div><div class="shape-line"></div><div class="shape-node middle">AGENT</div><div class="shape-line"></div><div class="shape-node last">SQL</div></div></section>
+        <div id="error-banner" class="error-banner hidden"></div>
+        <section class="control-card">
+          <div class="control-heading"><div><span class="section-index">01</span><h2>启动一条线索</h2></div><span id="mode-badge" class="mode-badge">预设样例模拟运行</span></div>
+          <div class="control-grid">
+            <label>演示场景<select id="scenario"><option value="A">A · 正常生成 AI SQL</option><option value="B">B · 抬头歧义与人工复核</option><option value="C">C · 低意向</option><option value="D">D · 自由输入任意客户原话</option></select></label>
+            <label>运行模式<select id="mode"><option value="simulation">预设样例模拟运行</option><option value="live">DeepSeek 实时推理</option></select></label>
+            <label>手机号（脱敏）<input id="phone" value="138xxxx1234"></label>
+            <label>原始来源<input id="source" value="网站线索"></label>
+            <label>客户行为案例<select id="behavior-case"><option value="A">多次了解产品</option><option value="B">关注功能并咨询</option><option value="C">浅层浏览</option><option value="E">明确申请演示</option><option value="custom">自行输入客户行为</option></select></label>
+            <label class="behavior-field">客户行为数据<textarea id="behavior-text" rows="3" maxlength="1200" placeholder="输入已观察到的客户行为，例如浏览、咨询、申请演示；不要推测采购意向"></textarea><small>可编辑案例内容；修改后按自定义行为实时评分</small></label>
+          </div>
+          <div class="control-actions"><button id="reset" class="button button-primary">创建 / 重置场景 <span>↗</span></button><button id="run-script" class="button button-ghost">运行当前预设脚本</button><span id="live-hint" class="hint"></span></div>
+        </section>
+        <div class="metrics"><div class="metric"><span>初筛评分 <small id="score-method">等待评分</small></span><strong id="score">—</strong><p id="priority">等待创建线索</p></div><div class="metric"><span>当前状态</span><strong id="status">NEW</strong><p id="status-reason">等待创建线索</p></div><div class="metric"><span>已确认字段</span><strong id="confirmed">0 <em>/ 6</em></strong><p>未知保持未知，候选不等于确认</p></div><div class="metric"><span>商机意向</span><strong id="intent">未知</strong><p id="intent-reason">等待客户回复</p></div></div>
+        <section class="panel score-panel"><div class="panel-heading"><div><span class="section-index">AI</span><h2>初始线索评分依据</h2></div><button id="retry-score" class="button button-ghost small">重试评分</button></div><div id="score-detail" class="score-detail"></div><p class="score-note">评分只决定外呼优先级；客户意向与 AI SQL 资格仍依据通话原话单独判断。</p></section>
+        <section class="panel flow-panel"><div class="panel-heading"><div><span class="section-index">02</span><h2>Agent 协作流程</h2></div><span class="panel-sub">点击步骤查看输入与输出摘要</span></div><div id="flow" class="flow"></div><div id="step-detail" class="step-detail">选择任一步骤查看执行依据。</div></section>
+        <div class="two-col">
+          <section class="panel conversation"><div class="panel-heading"><div><span class="section-index">03</span><h2>文字外呼对话</h2></div><span class="panel-sub">每轮回复后重新判断 · 最多 6 轮</span></div><div id="messages" class="messages"></div><div id="next-question" class="next-question"></div><div id="question-goal" class="hint"></div><div class="reply-examples"><div class="reply-examples-heading"><b>本轮客户原话示例</b><span id="reply-example-note">虚构演示内容 · 点击仅填入，不自动提交</span></div><div id="reply-examples" class="reply-example-list"></div></div><div class="reply-row"><textarea id="reply" rows="2" placeholder="输入客户原话；自由输入场景由 DeepSeek 实时推理"></textarea><button id="send" class="button button-primary">提交回复 ↗</button><button id="end-call" class="button button-ghost" title="仅根据已提交的客户原话判断结果">结束对话</button></div><div class="end-hint">主动结束只根据已提交的客户原话判断，输入框中未提交的文字不会计入证据。</div></section>
+          <section class="panel directory"><div class="panel-heading"><div><span class="section-index">04</span><h2>企业抬头核验</h2></div><span class="directory-tag">本地模拟企业候选库，非真实工商数据</span></div><div id="candidates" class="candidates"></div><div class="review-block"><h3>人工复核 <span>仅 REVIEW 可操作</span></h3><div class="review-row"><select id="candidate-select"></select><button id="confirm-candidate" class="button button-secondary">确认候选</button></div><div class="review-row"><input id="correct-name" placeholder="手动输入正确企业全称"><button id="correct" class="button button-secondary">手动修正</button></div><input id="review-note" class="review-note" placeholder="复核备注（可选，操作会记录时间）"><button id="return" class="button button-text">↩ 退回补问</button><div id="review-history" class="review-history"></div></div></section>
+        </div>
+        <section class="panel fields-panel"><div class="panel-heading"><div><span class="section-index">05</span><h2>六个 SQL 字段与证据</h2></div><span class="panel-sub">来源、原话、确认状态逐项保留</span></div><div class="table-scroll"><table><thead><tr><th>字段</th><th>当前值</th><th>来源</th><th>证据</th><th>状态</th></tr></thead><tbody id="fields"></tbody></table></div></section>
+        <div class="two-col result-grid"><section class="panel result-panel"><div class="panel-heading"><div><span class="section-index">06</span><h2>判断与下一步</h2></div></div><div id="decision"></div></section><section class="panel sql-panel"><div class="panel-heading"><div><span class="section-index">07</span><h2>AI SQL 输出</h2></div><span class="panel-sub">仅 READY 生成</span></div><div id="sql"></div></section></div>
+        <section class="panel log-panel"><div class="panel-heading"><div><span class="section-index">08</span><h2>运行与状态记录</h2></div><button id="retry" class="button button-ghost small">重试实时推理</button></div><div id="agent-log" class="log-list"></div><div id="state-log" class="state-log"></div></section>
+        <footer>AI SDR Agent DEMO · 评分优先级区间尚未用真实业务数据校准 · 企业数据均为虚构</footer>
+      </div>
+    </main>
+  </div>
+  <script src="/web/app.js"></script>
+</body>
+</html>
