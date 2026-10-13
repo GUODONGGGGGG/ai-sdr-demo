@@ -61,11 +61,22 @@ GOALS = {
     "consent": ("谢谢您介绍这些情况。如果后续有合适方案，方便让销售顾问再联系您吗？", "可以让销售顾问下周联系我。", r"联系|沟通|跟进"),
 }
 DISCOVERY_LABELS = {"current_workflow": "当前做法", "pain_point": "主要痛点", "target_outcome": "期望效果", "scale": "使用规模", "pilot_scope": "试点范围", "timeline": "预计时间", "budget_range": "预算范围", "decision_process": "决策参与人"}
-MAX_LIVE_REPLIES = 6
+MAX_LIVE_REPLIES = 8
 
 
 def _company_uncertain(replies: list[str]) -> bool:
     return any(re.search(r"(?:完整名称|全称|公司名|企业名|抬头).{0,12}(?:不确定|不知道|不清楚|记不清|说不准)|(?:不确定|不知道|不清楚|记不清|说不准).{0,12}(?:完整名称|全称|公司名|企业名|抬头)", reply) for reply in replies)
+
+
+def _stated_company(replies: list[str]) -> tuple[str, str] | None:
+    """Recognize a full legal name only when the customer identifies their company."""
+    intro = r"(?:我们(?:公司)?(?:的)?(?:全称|公司名|名称)?(?:是|叫)|公司(?:全称|名称|名)(?:是|叫)|企业(?:全称|名称)(?:是|叫)|我们来自)"
+    suffix = r"(?:有限责任公司|股份有限公司|有限公司|合伙企业)"
+    for reply in reversed(replies):
+        match = re.search(intro + r"\s*([^，。；\n]{2,80}?" + suffix + r")", reply)
+        if match:
+            return match.group(1).strip(), match.group(0)
+    return None
 
 
 def _safe_question(question: str, previous: list[dict]) -> bool:
@@ -294,7 +305,12 @@ def _evidenced_fields(replies: list[str], extracted: dict, evidence: dict) -> di
                 continue
         elif not isinstance(value, str):
             continue
+        elif name in {"company_name", "industry", "region"} and value not in quote:
+            continue
         fields[name] = field(value, "customer_statement", quote, "confirmed")
+    stated = _stated_company(replies)
+    if stated and fields["company_name"]["status"] != "confirmed":
+        fields["company_name"] = field(stated[0], "customer_statement", stated[1], "confirmed")
     # Small, explicit numeric rules recover quantities the model omitted; evidence is still customer text.
     for name, extractor in (("store_count", _store_count), ("designer_count", _designer_count)):
         if fields[name]["status"] == "unknown":
@@ -303,6 +319,22 @@ def _evidenced_fields(replies: list[str], extracted: dict, evidence: dict) -> di
                 if value is not None:
                     fields[name] = field(value, "customer_statement", reply, "confirmed")
                     break
+    if fields["industry"]["status"] == "unknown":
+        for reply in reversed(replies):
+            match = re.search(r"(?:主要做|主营业务是|主营|从事|业务是|行业是)\s*([^，。；\n]{2,24})", reply)
+            if match:
+                value = re.sub(r"(?:的)?行业$", "", match.group(1).strip())
+                if value and not re.search(r"不知道|不清楚|不确定|不方便", value):
+                    fields["industry"] = field(value, "customer_statement", match.group(0), "confirmed")
+                    break
+    if fields["region"]["status"] == "unknown":
+        for reply in reversed(replies):
+            if re.search(r"可能|考虑|计划|准备|打算|某个|某些|哪座|哪个|不确定", reply):
+                continue
+            match = re.search(r"(?:业务|门店|我们|公司|主要).{0,8}(?:在|位于)\s*([\u4e00-\u9fff]{2,8}?)(?=经营|开展|设点|有|做|，|。|；|$)", reply)
+            if match and match.group(1) not in {"全国", "国内", "海外", "当地"} and len(match.group(1)) <= 5 and not re.search(r"城市|地方|门店|公司|业务", match.group(1)):
+                fields["region"] = field(match.group(1), "customer_statement", match.group(0), "confirmed")
+                break
     if fields["company_name"]["status"] == "unknown":
         for reply in reversed(replies):
             match = re.search(r"我们是\s*([^，。；\n]{2,60})", reply)
@@ -316,7 +348,7 @@ def _evidenced_fields(replies: list[str], extracted: dict, evidence: dict) -> di
         for reply in reversed(replies):
             for clause in re.split(r"[，。；\n]", reply):
                 clause = clause.strip()
-                if re.search(r"(?:想把|希望把|需要把).{2,80}(?:统一|打通|整合|提升|解决)", clause):
+                if re.search(r"(?:想把|希望把|需要把|想要|希望|需要|打算).{0,80}(?:统一|打通|整合|提升|改善|优化|解决).{1,80}", clause):
                     fields["customer_need"] = field(clause, "customer_statement", clause, "confirmed")
                     break
             if fields["customer_need"]["status"] == "confirmed":
@@ -441,8 +473,12 @@ def _live_reply(state: dict, client: DeepSeekClient) -> None:
         "sql_field_priority": [name for name in FIELD_NAMES if state["fields"][name]["status"] != "confirmed"]}, state["agent_runs"])
     fields = _evidenced_fields(state["replies"], dialogue["extracted_fields"], dialogue["evidence"])
     for name, previous in state["fields"].items():
-        if fields[name]["status"] == "unknown" and previous["status"] == "confirmed" and ((previous["source"] == "customer_statement" and previous["evidence"] in "\n".join(state["replies"])) or (previous["source"] == "local_demo_directory" and fields["company_name"]["status"] == "confirmed")):
+        if fields[name]["status"] != "confirmed" and previous["status"] == "confirmed" and ((previous["source"] == "customer_statement" and previous["evidence"] in "\n".join(state["replies"])) or (previous["source"] == "local_demo_directory" and fields["company_name"]["status"] == "confirmed" and fields["company_name"]["value"] == state["fields"]["company_name"]["value"])):
             fields[name] = copy.deepcopy(previous)
+    if fields["customer_need"]["status"] != "confirmed" and state["question_history"][-1]["kind"] == "need":
+        last_reply = state["replies"][-1]
+        if len(last_reply) >= 7 and re.search(r"想|需要|希望|优化|解决|改进|提高|提升|效率|协同|系统", last_reply) and not re.search(r"不清楚|不知道|不确定|不方便|没需求|不需要", last_reply):
+            fields["customer_need"] = field(last_reply, "customer_statement", last_reply, "confirmed")
     all_text = "\n".join(state["replies"])
     for name, value in dialogue.get("discovery_fields", {}).items():
         quote = dialogue.get("discovery_evidence", {}).get(name)
@@ -474,11 +510,12 @@ def _live_reply(state: dict, client: DeepSeekClient) -> None:
     if not set(verification["candidate_ids"]).issubset(valid_ids):
         raise AgentError("企业核验 Agent 返回了不存在的候选 ID")
     exact = next((x for x in candidates if x["name"] == name), None)
-    explicit = any(re.search(r"我们是\s*" + re.escape(name or "<无>"), reply) for reply in state["replies"])
+    stated = _stated_company(state["replies"])
+    explicit = bool(stated and stated[0] == name)
     full_legal_name = bool(name and re.search(r"(?:有限责任公司|股份有限公司|有限公司|合伙企业)$", name))
     if explicit and full_legal_name:
         fields["company_name"] = field(name, "customer_statement", next(r for r in state["replies"] if name in r), "confirmed")
-        if exact:
+        if exact and fields["industry"]["status"] != "confirmed":
             fields["industry"] = field(exact["industry"], "local_demo_directory", f"{exact['id']}；客户自报完整抬头；本地模拟企业候选库，非真实工商数据", "confirmed")
     elif name:
         fields["company_name"]["status"] = "pending"
@@ -507,7 +544,7 @@ def add_reply(state: dict, reply: str, client: DeepSeekClient | None = None) -> 
     if state["status"] in {"READY", "NURTURE"} or state.get("call_ended"):
         raise ValueError("本次对话已结束；如需重新演示，请创建新线索")
     if state["mode"] == "live" and len(state["replies"]) >= MAX_LIVE_REPLIES:
-        raise ValueError("客户回复已达到 6 轮上限，请结束对话或人工复核")
+        raise ValueError(f"客户回复已达到 {MAX_LIVE_REPLIES} 轮上限，请结束对话或人工复核")
     reply = reply.strip()
     if not reply or len(reply) > 2000:
         raise ValueError("回复需为 1–2000 个字符")
@@ -587,7 +624,7 @@ def review(state: dict, action: str, candidate_id: str = "", company_name: str =
     if action not in {"confirm_candidate", "correct_name", "return_to_dialogue"}:
         raise ValueError("未知复核操作")
     if action == "return_to_dialogue" and state["mode"] == "live" and len(state["replies"]) >= MAX_LIVE_REPLIES:
-        raise ValueError("客户回复已达到 6 轮上限；可完成内部复核或创建新线索")
+        raise ValueError(f"客户回复已达到 {MAX_LIVE_REPLIES} 轮上限；可完成内部复核或创建新线索")
     if action == "confirm_candidate":
         company = next((x for x in state["candidates"] if x["id"] == candidate_id), None)
         if not company:

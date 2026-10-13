@@ -9,7 +9,7 @@ import requests
 from server.app import app
 from server.core import read_json
 from server.live import AgentError, DeepSeekClient, _validate
-from server.workflow import _safe_example, add_reply, end_call, new_session, review, retry_live, score_session
+from server.workflow import MAX_LIVE_REPLIES, _evidenced_fields, _safe_example, add_reply, end_call, new_session, review, retry_live, score_session
 
 
 class FakeResponse:
@@ -412,6 +412,21 @@ class WorkflowTests(unittest.TestCase):
         self.assertFalse(_safe_example("timeline", "我们公司叫云帆设计。"))
         self.assertTrue(_safe_example("company", "我们是杭州虚构云帆设计有限公司。"))
 
+    def test_customer_phrasing_recovers_all_six_fields_when_model_omits_them(self):
+        replies = [
+            "公司全称是苏州虚构远山科技有限公司。",
+            "我们主要做家居设计，业务目前在苏州经营。",
+            "门店一共5家，设计团队有18位设计师。",
+            "我们希望优化门店设计效率。",
+        ]
+        fields = _evidenced_fields(replies, {}, {})
+        self.assertEqual({name: item["value"] for name, item in fields.items()}, {
+            "company_name": "苏州虚构远山科技有限公司", "industry": "家居设计", "region": "苏州",
+            "store_count": 5, "designer_count": 18, "customer_need": "我们希望优化门店设计效率",
+        })
+        self.assertTrue(all(item["status"] == "confirmed" for item in fields.values()))
+        self.assertEqual(_evidenced_fields(["我们可能在某个城市开店。"], {}, {})["region"]["status"], "unknown")
+
     def test_model_stop_alias_is_normalized(self):
         base = {"next_question": "", "extracted_fields": {}, "evidence": {}, "missing_fields": []}
         for value in ("stop", "end", "结束", True):
@@ -544,7 +559,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(all(item["status"] == "confirmed" for item in state["fields"].values()))
         self.assertIsNotNone(state["ai_sql"])
 
-    def test_six_round_cap_and_consent_is_asked_in_time(self):
+    def test_eight_round_limit_allows_one_more_reply_after_review(self):
         class LimitedClient:
             def parallel_peer(self):
                 return None
@@ -580,8 +595,12 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(state["call_ended"])
         with self.assertRaisesRegex(ValueError, "已结束"):
             add_reply(state, "第七轮", client)
-        with self.assertRaisesRegex(ValueError, "6 轮上限"):
-            review(state, "return_to_dialogue")
+        review(state, "return_to_dialogue")
+        add_reply(state, "公司全称是杭州虚构星桥设计有限公司。", client)
+        self.assertEqual(len(state["replies"]), 7)
+        self.assertEqual(state["status"], "READY")
+        self.assertTrue(state["call_ended"])
+        self.assertEqual(MAX_LIVE_REPLIES, 8)
 
 
 if __name__ == "__main__":

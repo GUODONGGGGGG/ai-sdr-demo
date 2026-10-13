@@ -79,12 +79,18 @@ def _store_count(text: str) -> int | None:
     direct = _number(text, "家门店")
     if direct is not None:
         return direct
-    match = re.search(r"门店(?:有|共|大概|约)?\s*([0-9]+|[一二三四五六七八九十]+)\s*家", text)
+    direct = _number(text, "家店")
+    if direct is not None:
+        return direct
+    match = re.search(r"门店(?:一共|总共|目前|大概|约|有|共)?\s*([0-9]+|[一二三四五六七八九十]+)\s*家", text)
     return _number(match.group(1) + "家", "家") if match else None
 
 
 def _designer_count(text: str) -> int | None:
-    match = re.search(r"设计师(?:大概|约|有|共)?\s*([0-9]+|[一二三四五六七八九十]+)\s*人", text)
+    number = r"([0-9]+|[一二三四五六七八九十]+)"
+    match = re.search(r"设计师(?:一共|总共|目前|大概|约|有|共)?\s*" + number + r"\s*(?:人|位|名)", text)
+    if not match:
+        match = re.search(number + r"\s*(?:人|位|名)设计师", text)
     return _number(match.group(1) + "人", "人") if match else None
 
 

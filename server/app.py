@@ -14,7 +14,7 @@ from pathlib import Path
 from flask import Flask, jsonify, redirect, render_template, request, send_from_directory, session, url_for
 
 from .core import read_json
-from .workflow import add_reply, end_call, new_session, retry_live, review, score_session
+from .workflow import MAX_LIVE_REPLIES, add_reply, end_call, new_session, retry_live, review, score_session
 
 ROOT = Path(__file__).resolve().parents[1]
 app = Flask(__name__, static_folder=str(ROOT / "web"), static_url_path="/web", template_folder=str(ROOT / "web"))
@@ -106,7 +106,7 @@ def index():
 def bootstrap():
     data = read_json("scenarios.json")
     companies = read_json("companies.json")["companies"]
-    return jsonify({"aql": data["aql"], "behavior_cases": data["behavior_cases"], "scenarios": [{"id": x["id"], "title": x["title"], "replies": x["replies"]} for x in data["scenarios"]], "companies": companies, "live_available": bool(os.getenv("DEEPSEEK_API_KEY")), "model": os.getenv("DEEPSEEK_MODEL", "deepseek-flash"), "directory_notice": "本地模拟企业候选库，非真实工商数据"})
+    return jsonify({"aql": data["aql"], "behavior_cases": data["behavior_cases"], "scenarios": [{"id": x["id"], "title": x["title"], "replies": x["replies"]} for x in data["scenarios"]], "companies": companies, "max_live_replies": MAX_LIVE_REPLIES, "live_available": bool(os.getenv("DEEPSEEK_API_KEY")), "model": os.getenv("DEEPSEEK_MODEL", "deepseek-flash"), "directory_notice": "本地模拟企业候选库，非真实工商数据"})
 
 
 def _session(session_id: str):
