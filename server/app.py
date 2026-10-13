@@ -105,7 +105,8 @@ def index():
 @app.get("/api/bootstrap")
 def bootstrap():
     data = read_json("scenarios.json")
-    return jsonify({"aql": data["aql"], "behavior_cases": data["behavior_cases"], "scenarios": [{"id": x["id"], "title": x["title"], "replies": x["replies"]} for x in data["scenarios"]], "live_available": bool(os.getenv("DEEPSEEK_API_KEY")), "model": os.getenv("DEEPSEEK_MODEL", "deepseek-flash"), "directory_notice": "本地模拟企业候选库，非真实工商数据"})
+    companies = read_json("companies.json")["companies"]
+    return jsonify({"aql": data["aql"], "behavior_cases": data["behavior_cases"], "scenarios": [{"id": x["id"], "title": x["title"], "replies": x["replies"]} for x in data["scenarios"]], "companies": companies, "live_available": bool(os.getenv("DEEPSEEK_API_KEY")), "model": os.getenv("DEEPSEEK_MODEL", "deepseek-flash"), "directory_notice": "本地模拟企业候选库，非真实工商数据"})
 
 
 def _session(session_id: str):
