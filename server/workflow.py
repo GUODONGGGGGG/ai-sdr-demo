@@ -206,7 +206,7 @@ def new_session(mode: str, aql: dict | None = None, scenario_id: str = "A") -> d
     opening = "您好，我是企业版产品的智能销售助理。想简单了解一下您的情况，方便先请教贵公司平时怎么称呼吗？"
     state = {
         "id": uuid.uuid4().hex, "mode": mode, "mode_label": "预设样例模拟运行" if mode == "simulation" else "DeepSeek 实时推理",
-        "scenario_id": scenario_id, "aql": aql, "score": score_aql(aql) if mode == "simulation" else {"score": None, "priority": "等待 DeepSeek 评分", "signals": [], "method": "pending", "rule_note": "尚未得到模型评分"}, "replies": [], "messages": [{"role": "agent", "text": opening, "at": now()}], "question_history": [{"kind": "company", "text": opening}], "call_ended": False, "fields": {name: dict(UNKNOWN) for name in FIELD_NAMES},
+        "scenario_id": scenario_id, "aql": aql, "score": score_aql(aql) if mode == "simulation" else {"score": None, "priority": "等待 DeepSeek 评分", "signals": [], "method": "pending", "rule_note": "尚未得到模型评分"}, "replies": [], "messages": [{"role": "agent", "text": opening, "at": now()}], "question_history": [{"kind": "company", "text": opening, "targets": ["company_name"]}], "declined_goals": [], "call_ended": False, "fields": {name: dict(UNKNOWN) for name in FIELD_NAMES},
         "candidates": [], "intent": {"level": "未知", "evidence": None, "follow_up_willingness": False, "reason": "尚未对话"},
         "status": "NEW", "status_reason": "线索已创建", "updated_at": now(), "events": [], "steps": {}, "agent_runs": [], "review_actions": [],
         "manual_company": None, "ai_sql": None, "missing_fields": list(FIELD_LABELS.values()), "follow_up_suggestions": [], "error": None,
@@ -307,6 +307,10 @@ def _evidenced_fields(replies: list[str], extracted: dict, evidence: dict) -> di
             continue
         elif name in {"company_name", "industry", "region"} and value not in quote:
             continue
+        elif name == "industry" and re.search(r"(?:有限责任公司|股份有限公司|有限公司|合伙企业)", quote) and not re.search(r"主营|主要做|业务|行业|从事", quote):
+            continue
+        elif name == "region" and re.search(r"(?:有限责任公司|股份有限公司|有限公司|合伙企业)", quote) and not re.search(r"(?:在|位于|经营|业务|门店)", quote):
+            continue
         fields[name] = field(value, "customer_statement", quote, "confirmed")
     stated = _stated_company(replies)
     if stated and fields["company_name"]["status"] != "confirmed":
@@ -358,18 +362,23 @@ def _evidenced_fields(replies: list[str], extracted: dict, evidence: dict) -> di
 
 def _live_goals(state: dict, fields: dict, intent: dict) -> list[str]:
     asked = {item["kind"] for item in state["question_history"]}
-    counts = {goal: sum(item["kind"] == goal for item in state["question_history"]) for goal in ("profile", "footprint")}
+    declined = set(state.get("declined_goals", []))
+    prior_questions = {goal: [item for item in state["question_history"] if item["kind"] == goal] for goal in ("profile", "footprint")}
     unavailable = bool(state["replies"] and re.search(r"不清楚|不知道|不确定|不方便透露|记不清", state["replies"][-1]))
     goals = []
-    if fields["customer_need"]["status"] != "confirmed" and "need" not in asked:
+    if fields["customer_need"]["status"] != "confirmed" and "need" not in asked and "need" not in declined:
         goals.append("need")
     profile_missing = sum(fields[name]["status"] != "confirmed" for name in ("industry", "region"))
     footprint_missing = sum(fields[name]["status"] != "confirmed" for name in ("store_count", "designer_count"))
-    if profile_missing and (not counts["profile"] or counts["profile"] == 1 and profile_missing == 1 and not unavailable):
+    profile_prior = prior_questions["profile"]
+    footprint_prior = prior_questions["footprint"]
+    profile_pair_asked = bool(profile_prior and len(profile_prior[0].get("targets", [])) == 2)
+    footprint_pair_asked = bool(footprint_prior and len(footprint_prior[0].get("targets", [])) == 2)
+    if profile_missing and "profile" not in declined and (not profile_prior or len(profile_prior) == 1 and profile_pair_asked and profile_missing == 1 and not unavailable):
         goals.append("profile")
-    if footprint_missing and (not counts["footprint"] or counts["footprint"] == 1 and footprint_missing == 1 and not unavailable):
+    if footprint_missing and "footprint" not in declined and (not footprint_prior or len(footprint_prior) == 1 and footprint_pair_asked and footprint_missing == 1 and not unavailable):
         goals.append("footprint")
-    if not intent["follow_up_willingness"] and "consent" not in asked:
+    if not intent["follow_up_willingness"] and "consent" not in asked and "consent" not in declined:
         if len(state["replies"]) >= 4 and fields["customer_need"]["status"] == "confirmed":
             goals.insert(0, "consent")
         else:
@@ -451,7 +460,10 @@ def _live_qualify(state: dict, fields: dict, candidates: list, intent: dict, dia
             state["reply_example"] = {"text": sample, "source": "rule_based", "question": question}
         state["question_goal"] = goal
         state["goal_reason"] = dialogue.get("question_reason", "补齐 SQL 所需字段")[:200] if valid else "优先补齐 SQL 字段；模型建议未覆盖本轮目标，已使用安全话术"
-        state["question_history"].append({"kind": goal, "text": question})
+        targets = {"need": ["customer_need"], "profile": [name for name in ("industry", "region") if fields[name]["status"] != "confirmed"],
+                   "footprint": [name for name in ("store_count", "designer_count") if fields[name]["status"] != "confirmed"],
+                   "consent": ["follow_up_willingness"]}[goal]
+        state["question_history"].append({"kind": goal, "text": question, "targets": targets})
         state["call_ended"] = False
         status = "CONVERSING"
         reason = "已具备 SQL 交接条件；继续补齐六个字段" if eligible else "优先收集六个字段与跟进意愿"
@@ -468,7 +480,7 @@ def _live_qualify(state: dict, fields: dict, candidates: list, intent: dict, dia
 def _live_reply(state: dict, client: DeepSeekClient) -> None:
     possible = _live_goals(state, state["fields"], state["intent"])
     dialogue = client.run("dialogue", {"aql": state["aql"], "replies": state["replies"], "current_fields": state["fields"],
-        "question_history": state["question_history"], "discovery": state["discovery"], "possible_goals": possible,
+        "question_history": state["question_history"], "declined_goals": state.get("declined_goals", []), "discovery": state["discovery"], "possible_goals": possible,
         "round": len(state["replies"]), "max_rounds": MAX_LIVE_REPLIES, "scenario": state["scenario_id"],
         "sql_field_priority": [name for name in FIELD_NAMES if state["fields"][name]["status"] != "confirmed"]}, state["agent_runs"])
     fields = _evidenced_fields(state["replies"], dialogue["extracted_fields"], dialogue["evidence"])
@@ -548,6 +560,10 @@ def add_reply(state: dict, reply: str, client: DeepSeekClient | None = None) -> 
     reply = reply.strip()
     if not reply or len(reply) > 2000:
         raise ValueError("回复需为 1–2000 个字符")
+    if state["mode"] == "live" and state["question_goal"] in {"company", "need", "profile", "footprint", "consent"} and re.search(r"不清楚|不知道|不确定|不方便透露|记不清|不能说|不愿透露", reply):
+        declined = state.setdefault("declined_goals", [])
+        if state["question_goal"] not in declined:
+            declined.append(state["question_goal"])
     state["replies"].append(reply)
     state["messages"].append({"role": "customer", "text": reply, "at": now()})
     state["error"] = None

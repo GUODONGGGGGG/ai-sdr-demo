@@ -427,6 +427,73 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(all(item["status"] == "confirmed" for item in fields.values()))
         self.assertEqual(_evidenced_fields(["我们可能在某个城市开店。"], {}, {})["region"]["status"], "unknown")
 
+    def test_company_name_does_not_prove_operating_region_or_industry(self):
+        quote = "我们是杭州星桥家居设计有限公司。"
+        fields = _evidenced_fields([quote], {"industry": "家居设计", "region": "杭州"}, {"industry": quote, "region": quote})
+        self.assertEqual(fields["company_name"]["status"], "confirmed")
+        self.assertEqual(fields["industry"]["status"], "unknown")
+        self.assertEqual(fields["region"]["status"], "unknown")
+
+    def test_one_malformed_model_field_does_not_discard_valid_dialogue(self):
+        response = _validate("dialogue", {"next_question": "贵公司在哪个城市经营？",
+            "extracted_fields": {"industry": {"value": "家居设计"}, "customer_need": "优化设计协同"},
+            "evidence": {"industry": "我们主要做家居设计", "customer_need": "我们想优化设计协同"},
+            "missing_fields": ["region", 3]})
+        self.assertEqual(response["extracted_fields"], {"customer_need": "优化设计协同"})
+        self.assertEqual(response["evidence"], {"customer_need": "我们想优化设计协同"})
+        self.assertEqual(response["_discarded_model_fields"], ["industry"])
+
+    def test_single_field_question_is_not_repeated_after_vague_answer(self):
+        class RepeatingClient:
+            def parallel_peer(self):
+                return None
+
+            def run(self, name, payload, log):
+                if name == "dialogue":
+                    return {"question_goal": "profile", "next_question": "贵公司主要在哪个城市经营？",
+                            "extracted_fields": {}, "evidence": {}, "missing_fields": []}
+                if name == "verification":
+                    return {"candidate_ids": [item["id"] for item in payload["candidates"]], "ambiguity_reason": "本地候选", "confirmation_question": "", "recommend_review": False}
+                return {"intent_level": "未知", "evidence": "", "follow_up_willingness": False, "reason": "尚未确认"}
+
+        state = new_session("live", scenario_id="D")
+        client = RepeatingClient()
+        add_reply(state, "我们是杭州星桥家居设计有限公司。", client)
+        add_reply(state, "我们想把门店设计和协同统一起来。", client)
+        self.assertEqual(state["question_goal"], "profile")
+        self.assertEqual(state["question_history"][-1]["targets"], ["region"])
+        add_reply(state, "我们还在讨论这个事情。", client)
+        self.assertEqual(state["question_goal"], "footprint")
+        self.assertEqual(sum(item["kind"] == "profile" for item in state["question_history"]), 1)
+
+    def test_paired_question_only_clarifies_missing_part_once(self):
+        class WrongQuestionClient:
+            def parallel_peer(self):
+                return None
+
+            def run(self, name, payload, log):
+                if name == "dialogue":
+                    return {"question_goal": "profile", "next_question": "贵公司主要做什么业务、在哪个城市经营？",
+                            "extracted_fields": {}, "evidence": {}, "missing_fields": []}
+                if name == "verification":
+                    return {"candidate_ids": [], "ambiguity_reason": "本地库无候选", "confirmation_question": "", "recommend_review": True}
+                return {"intent_level": "未知", "evidence": "", "follow_up_willingness": False, "reason": "尚未确认"}
+
+        state = new_session("live", scenario_id="D")
+        client = WrongQuestionClient()
+        add_reply(state, "我们是苏州虚构远山科技有限公司。", client)
+        add_reply(state, "我们想优化设计协同效率。", client)
+        self.assertEqual(state["question_history"][-1]["targets"], ["industry", "region"])
+        add_reply(state, "主要做软件研发。", client)
+        self.assertEqual(state["question_goal"], "profile")
+        self.assertIn("城市", state["next_question"])
+        self.assertNotIn("做哪类业务", state["next_question"])
+        self.assertEqual(state["question_history"][-1]["targets"], ["region"])
+        add_reply(state, "这个我现在不清楚。", client)
+        self.assertIn("profile", state["declined_goals"])
+        self.assertNotEqual(state["question_goal"], "profile")
+        self.assertNotIn("城市", state["next_question"])
+
     def test_model_stop_alias_is_normalized(self):
         base = {"next_question": "", "extracted_fields": {}, "evidence": {}, "missing_fields": []}
         for value in ("stop", "end", "结束", True):
