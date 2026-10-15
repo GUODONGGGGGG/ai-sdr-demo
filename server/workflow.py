@@ -33,14 +33,20 @@ def _interest_quote(replies: list[str]) -> str | None:
     return None
 
 
-def _consent_quote(replies: list[str]) -> str | None:
-    """Require an explicit, non-question customer statement allowing contact."""
+def _consent_quote(replies: list[str], contexts: list[dict] | None = None) -> str | None:
+    """Accept explicit contact permission, including a short answer to that exact question."""
     pattern = r"(?:可以|愿意|方便|同意).{0,12}(?:联系|沟通)|(?:让|请)(?:销售|你们).{0,12}(?:联系|沟通)(?:我|我们)?"
-    for reply in reversed(replies):
+    for index in range(len(replies) - 1, -1, -1):
+        reply = replies[index]
+        context = contexts[index] if contexts and index < len(contexts) else {}
+        if re.search(r"(?:不|暂时不|无需|不要|别).{0,12}(?:联系|沟通)", reply) or (context.get("goal") == "consent" and re.fullmatch(r"\s*(?:不方便|不行|不愿意|不用了|先不用)[。！!，,\s]*", reply)):
+            return None
         for clause in re.split(r"[，。；\n]", reply):
             clause = clause.strip()
             if clause and not re.search(r"(?:不|暂时不|无需|不要).{0,8}(?:联系|沟通)", clause) and not re.search(r"[？?]", clause) and re.search(pattern, clause):
                 return clause
+        if context.get("goal") == "consent" and re.fullmatch(r"\s*(?:可以(?:的)?|好(?:的)?|行|没问题|方便|同意|愿意|嗯可以)[。！!，,\s]*", reply):
+            return reply.strip()
     return None
 
 
@@ -79,6 +85,23 @@ def _stated_company(replies: list[str]) -> tuple[str, str] | None:
     return None
 
 
+def _stated_company_alias(replies: list[str], companies: list[dict]) -> tuple[str, str] | None:
+    """Use an alias only when it occurs in the customer's own company introduction."""
+    introductions = (r"我们(?:公司)?(?:是|叫)\s*([^，。；\n]+)",
+                     r"我(?:在|来自)\s*([^，。；\n]+)")
+    aliases = sorted({alias for company in companies for alias in company.get("aliases", []) if len(alias) >= 2}, key=len, reverse=True)
+    for reply in reversed(replies):
+        for pattern in introductions:
+            match = re.search(pattern, reply)
+            if not match:
+                continue
+            claim = match.group(1)
+            for alias in aliases:
+                if alias in claim:
+                    return alias, match.group(0)
+    return None
+
+
 def _safe_question(question: str, previous: list[dict]) -> bool:
     normalized = re.sub(r"\s|[，。？！?]", "", question)
     return bool(normalized and len(question) <= 100 and question.count("？") + question.count("?") <= 1 and not SENSITIVE_REQUEST.search(question) and all(normalized != re.sub(r"\s|[，。？！?]", "", item["text"]) for item in previous))
@@ -104,7 +127,7 @@ def _qualify(state: dict, fields: dict, candidates: list, intent: dict, reason_h
         intent = {"level": "低", "evidence": next((r for r in state["replies"] if any(x in r for x in ("不需要联系", "不要联系", "拒绝联系", "没有采购计划"))), None), "follow_up_willingness": False, "reason": "客户拒绝联系或明确无采购计划"}
     state["fields"] = fields
     state["candidates"] = candidates
-    intent.setdefault("willingness_evidence", _consent_quote(state["replies"]) if intent["follow_up_willingness"] else None)
+    intent.setdefault("willingness_evidence", _consent_quote(state["replies"], state.get("reply_contexts")) if intent["follow_up_willingness"] else None)
     state["intent"] = intent
     state["missing_fields"] = [FIELD_LABELS[name] for name, item in fields.items() if item["status"] != "confirmed"]
     willing = intent["follow_up_willingness"]
@@ -211,7 +234,7 @@ def new_session(mode: str, aql: dict | None = None, scenario_id: str = "A") -> d
         "status": "NEW", "status_reason": "线索已创建", "updated_at": now(), "events": [], "steps": {}, "agent_runs": [], "review_actions": [],
         "manual_company": None, "ai_sql": None, "missing_fields": list(FIELD_LABELS.values()), "follow_up_suggestions": [], "error": None,
         "directory_notice": "本地模拟企业候选库，非真实工商数据", "next_question": opening, "reply_example": None,
-        "discovery": {}, "handoff_eligible": False, "question_goal": "company", "goal_reason": "先了解客户公司称呼",
+        "discovery": {}, "handoff_eligible": False, "question_goal": "company", "goal_reason": "先了解客户公司称呼", "reply_contexts": [],
     }
     _event(state, "NEW", "线索已创建")
     _step(state, "aql", "done", "手机号、来源与行为", "AQL 已保存；来源不等于已完成通话")
@@ -378,8 +401,9 @@ def _live_goals(state: dict, fields: dict, intent: dict) -> list[str]:
         goals.append("profile")
     if footprint_missing and "footprint" not in declined and (not footprint_prior or len(footprint_prior) == 1 and footprint_pair_asked and footprint_missing == 1 and not unavailable):
         goals.append("footprint")
-    if not intent["follow_up_willingness"] and "consent" not in asked and "consent" not in declined:
-        if len(state["replies"]) >= 4 and fields["customer_need"]["status"] == "confirmed":
+    consent_asks = sum(item["kind"] == "consent" for item in state["question_history"])
+    if not intent["follow_up_willingness"] and consent_asks < 2 and "consent" not in declined:
+        if len(state["replies"]) >= 4 and fields["customer_need"]["status"] == "confirmed" and consent_asks == 0:
             goals.insert(0, "consent")
         else:
             goals.append("consent")
@@ -442,6 +466,8 @@ def _live_qualify(state: dict, fields: dict, candidates: list, intent: dict, dia
         # Six SQL fields and contact consent take precedence over optional discovery.
         goal = goals[0]
         fallback, sample, pattern = _field_question(goal, fields)
+        if goal == "consent" and any(item["kind"] == "consent" for item in state["question_history"]):
+            fallback = "刚才提到的安排我记下了。方便确认一下，后续可以让销售顾问联系您吗？"
         proposed = dialogue.get("next_question", "").strip()
         valid = _safe_question(proposed, state["question_history"]) and bool(re.search(pattern, proposed))
         if goal == "profile" and fields["industry"]["status"] == "confirmed" and re.search(r"行业|业务|做哪类|主营", proposed):
@@ -459,7 +485,7 @@ def _live_qualify(state: dict, fields: dict, candidates: list, intent: dict, dia
         else:
             state["reply_example"] = {"text": sample, "source": "rule_based", "question": question}
         state["question_goal"] = goal
-        state["goal_reason"] = dialogue.get("question_reason", "补齐 SQL 所需字段")[:200] if valid else "优先补齐 SQL 字段；模型建议未覆盖本轮目标，已使用安全话术"
+        state["goal_reason"] = dialogue.get("question_reason", "补齐 SQL 所需字段")[:200] if valid else "上轮联系问题尚未得到回答，补问一次" if goal == "consent" and any(item["kind"] == "consent" for item in state["question_history"]) else "优先补齐 SQL 字段；模型建议未覆盖本轮目标，已使用安全话术"
         targets = {"need": ["customer_need"], "profile": [name for name in ("industry", "region") if fields[name]["status"] != "confirmed"],
                    "footprint": [name for name in ("store_count", "designer_count") if fields[name]["status"] != "confirmed"],
                    "consent": ["follow_up_willingness"]}[goal]
@@ -504,8 +530,18 @@ def _live_reply(state: dict, client: DeepSeekClient) -> None:
     region = fields["region"]["value"]
     try:
         candidates = search_companies(name or "", region)
+        if not candidates and fields["company_name"]["status"] != "confirmed":
+            directory = read_json("companies.json")["companies"]
+            alias_claim = _stated_company_alias(state["replies"], directory)
+            if alias_claim:
+                candidates = search_companies(alias_claim[0], region, directory)
+                if fields["company_name"]["status"] == "unknown":
+                    fields["company_name"] = field(alias_claim[0], "customer_statement", alias_claim[1], "pending")
+                name = fields["company_name"]["value"]
     except (OSError, ValueError) as exc:
         raise AgentError("本地模拟企业候选库不可用，需人工复核") from exc
+    # Candidate lookup is deterministic and can still be shown if a later model call fails.
+    state["candidates"] = candidates
     verification_payload = {"replies": state["replies"], "claimed_name": name, "candidates": candidates}
     intent_payload = {"replies": state["replies"], "fields": fields}
     peer = client.parallel_peer()
@@ -540,7 +576,7 @@ def _live_reply(state: dict, client: DeepSeekClient) -> None:
     evidence_ok = bool(quote and quote in "\n".join(state["replies"]))
     fallback_quote = _interest_quote(state["replies"])
     interest_evidence = quote if evidence_ok else fallback_quote
-    consent_evidence = _consent_quote(state["replies"])
+    consent_evidence = _consent_quote(state["replies"], state.get("reply_contexts"))
     if interest_evidence:
         level = judged["intent_level"] if judged["intent_level"] in {"低", "中", "高"} else "中"
         source = "deepseek_quote" if evidence_ok else "customer_statement_rule"
@@ -564,6 +600,11 @@ def add_reply(state: dict, reply: str, client: DeepSeekClient | None = None) -> 
         declined = state.setdefault("declined_goals", [])
         if state["question_goal"] not in declined:
             declined.append(state["question_goal"])
+    if state["mode"] == "live" and state["question_goal"] == "consent" and re.fullmatch(r"\s*(?:不方便|不行|不愿意|不用了|先不用)[。！!，,\s]*", reply):
+        declined = state.setdefault("declined_goals", [])
+        if "consent" not in declined:
+            declined.append("consent")
+    state.setdefault("reply_contexts", []).append({"goal": state.get("question_goal"), "question": state.get("next_question", "")})
     state["replies"].append(reply)
     state["messages"].append({"role": "customer", "text": reply, "at": now()})
     state["error"] = None

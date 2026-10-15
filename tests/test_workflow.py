@@ -9,7 +9,7 @@ import requests
 from server.app import app
 from server.core import read_json
 from server.live import AgentError, DeepSeekClient, _validate
-from server.workflow import MAX_LIVE_REPLIES, _evidenced_fields, _safe_example, add_reply, end_call, new_session, review, retry_live, score_session
+from server.workflow import MAX_LIVE_REPLIES, _consent_quote, _evidenced_fields, _safe_example, add_reply, end_call, new_session, review, retry_live, score_session
 
 
 class FakeResponse:
@@ -343,6 +343,72 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual([x["id"] for x in state["candidates"]], ["DEMO-001", "DEMO-002"])
         self.assertEqual(state["status"], "CONVERSING")
         self.assertIsNone(state["ai_sql"])
+
+    def test_live_b_recovers_alias_from_self_introduction_even_when_model_omits_it(self):
+        class OmissionClient:
+            def parallel_peer(self):
+                return None
+
+            def run(self, name, payload, log):
+                if name == "dialogue":
+                    return {"next_question": "您目前最想改善哪方面的工作？", "extracted_fields": {}, "evidence": {}, "missing_fields": []}
+                if name == "verification":
+                    return {"candidate_ids": [item["id"] for item in payload["candidates"]], "ambiguity_reason": "简称匹配", "confirmation_question": "", "recommend_review": True}
+                return {"intent_level": "未知", "evidence": "", "follow_up_willingness": False, "reason": "尚未确认"}
+
+        state = new_session("live", scenario_id="B")
+        add_reply(state, "我在杭州的星桥家居负责门店管理，公司全称暂时记不清。", OmissionClient())
+        self.assertEqual([x["id"] for x in state["candidates"]], ["DEMO-001", "DEMO-002"])
+        self.assertEqual(state["fields"]["company_name"]["status"], "pending")
+        self.assertIsNone(state["ai_sql"])
+
+    def test_live_b_keeps_local_candidates_if_verification_call_fails(self):
+        class FailingVerification:
+            def parallel_peer(self):
+                return None
+
+            def run(self, name, payload, log):
+                if name == "dialogue":
+                    return {"next_question": "", "extracted_fields": {}, "evidence": {}, "missing_fields": []}
+                raise AgentError("模型暂时不可用")
+
+        state = new_session("live", scenario_id="B")
+        add_reply(state, "我们是杭州的星桥家居，完整名称我现在记不清。", FailingVerification())
+        self.assertEqual(state["status"], "REVIEW")
+        self.assertEqual([x["id"] for x in state["candidates"]], ["DEMO-001", "DEMO-002"])
+        self.assertIsNone(state["ai_sql"])
+
+    def test_live_a_clarifies_unanswered_contact_once_and_generates_sql(self):
+        class OmissionClient:
+            def parallel_peer(self):
+                return None
+
+            def run(self, name, payload, log):
+                if name == "dialogue":
+                    return {"next_question": "", "extracted_fields": {}, "evidence": {}, "missing_fields": []}
+                if name == "verification":
+                    return {"candidate_ids": [item["id"] for item in payload["candidates"]], "ambiguity_reason": "本地候选", "confirmation_question": "", "recommend_review": False}
+                return {"intent_level": "中", "evidence": "", "follow_up_willingness": False, "reason": "有需求"}
+
+        state = new_session("live", scenario_id="A")
+        client = OmissionClient()
+        for reply in ("我们是杭州星桥家居设计有限公司。", "我们想把门店方案设计和团队协同统一起来。",
+                      "目前在杭州有五家门店，设计师大概十八人。"):
+            add_reply(state, reply, client)
+        self.assertEqual(state["question_goal"], "consent")
+        add_reply(state, "我们准备下周了解企业版。", client)
+        self.assertFalse(state["call_ended"])
+        self.assertEqual(state["question_goal"], "consent")
+        self.assertIn("确认一下", state["next_question"])
+        add_reply(state, "可以。", client)
+        self.assertEqual(state["status"], "READY")
+        self.assertEqual(state["intent"]["willingness_evidence"], "可以。")
+        self.assertIsNotNone(state["ai_sql"])
+
+    def test_short_agreement_only_counts_as_answer_to_contact_question(self):
+        self.assertIsNone(_consent_quote(["可以。"], [{"goal": "profile"}]))
+        self.assertEqual(_consent_quote(["可以。"], [{"goal": "consent"}]), "可以。")
+        self.assertIsNone(_consent_quote(["可以让销售联系我。", "现在不要联系。"], [{"goal": "consent"}, {"goal": "consent"}]))
 
     def test_d_requires_live_and_has_no_preset_script(self):
         with self.assertRaisesRegex(ValueError, "实时推理"):
